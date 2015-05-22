@@ -27,11 +27,12 @@ class RaschModel:
     """
 
     def __init__(self, a, b):
-        self.a = a
-        self.b = b
         self.N = len(a)
         self.Q = len(b)
-        self.M = a.dot(np.ones((1, self.Q))) + np.ones((self.N, 1)).dot(b.T)
+        self.a = np.reshape(a, (len(a), 1))
+        self.b = np.reshape(b, (len(b), 1))
+        self.M = (self.a.dot(np.ones((1, self.Q))) +
+                  np.ones((self.N, 1)).dot(self.b.T))
 
     def sample(self):
         """ Sample a QxN matrix from the Rasch Model
@@ -44,33 +45,43 @@ class RaschModel:
 
 
 class LearnRaschModel:
-    """Alternating descent method for learning Rasch Model parameters
+    """Alternating descent methods for learning Rasch Model parameters
 
     Parameters
     ----------
     max_iter_inner : int (default : 100)
         Maximum number of iterations in the inner computations when solving a
         logistic regression problem
+
     max_iter_outer : int (default : 10)
         Maximum number of iterations in the outer computations of alternating
         between the computations of a and b
+
     gamma : float (default : 1.0)
         shrinkage parameter for gradient descent
+
     tol_inner : float (default : 1e-5)
         Stopping criteria in the inner computations
+
     tol_outer : float (default : 1e-5)
         Stopping criteria in the inner computations
+
     mu : float (default : 0.0)
         The standard Rasch model parameter learning problem is ill-posed.
         Thus, we need to impose some condition for the uniqueness of the
         solution.  In the computations, we assume that mean(a) = mu, where a
         are the user level parameters
+
+    solver : {'gradient', 'newton'}
+        Algorithm to use for optimization
+
     verbose: boolean (default: True)
         if True, then prints iterations
     """
 
     def __init__(self, max_iter_inner=100, max_iter_outer=10, gamma=1.0,
-                 tol_inner=1e-5, tol_outer=1e-5, mu=0.0, verbose=True):
+                 tol_inner=1e-5, tol_outer=1e-5, mu=0.0,
+                 solver='gradient', verbose=True):
         self.max_iter_inner = max_iter_inner
         self.max_iter_outer = max_iter_outer
         self.gamma = gamma
@@ -78,6 +89,7 @@ class LearnRaschModel:
         self.tol_outer = tol_outer
         self.mu = mu
         self.verbose = verbose
+        self.solver = solver
 
     def fit(self, Y):
         """ Fit the model Rasch model given training data Y
@@ -99,7 +111,7 @@ class LearnRaschModel:
 
 def _rasch_alternating(Y, b, k, gamma, max_iter, tol):
     """
-    Logistic regression when fixing one of the Rasch modep parameters
+    Logistic regression when fixing one of the Rasch model parameters
     """
     a_old = 0
     a_new = 0
