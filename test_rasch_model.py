@@ -9,4 +9,7 @@ b = np.random.randn(Q,1)
 rasch = RaschModel(a, b)
 Y = rasch.sample()
 
-a_est, b_est, num_iter = LearnRaschModel().fit(Y)
+a_est, b_est, num_iter = LearnRaschModel(solver='newton').fit(Y)
+
+print(a)
+print(a_est)

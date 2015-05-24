@@ -105,11 +105,11 @@ class LearnRaschModel:
         a_est, b_est, n_iter = _learn_rasch(Y, self.max_iter_inner,
                                             self.max_iter_outer, self.gamma,
                                             self.tol_inner, self.tol_outer,
-                                            self.mu, self.verbose)
+                                            self.mu, self.verbose, self.solver)
         return a_est, b_est, n_iter
 
 
-def _rasch_alternating(Y, b, k, gamma, max_iter, tol):
+def _rasch_alternating(Y, b, k, gamma, max_iter, tol, solver):
     """
     Logistic regression when fixing one of the Rasch model parameters
     """
@@ -118,54 +118,68 @@ def _rasch_alternating(Y, b, k, gamma, max_iter, tol):
     mu = np.sum(Y[k, :])
     gamma = gamma / np.shape(Y)[1]
 
-    def gradient(a): return (mu - np.sum(1 / (1+np.exp(-(a + b)))))
+    def gradient(a): 
+        return (mu - np.sum(1 / (1+np.exp(-(a + b)))))
+    def hessian(a):
+        tmp = np.sum(1 / ((1 + np.exp(-(a + b))) * ((1 + np.exp(a + b)))))
+        return(tmp)
+    
     tolerance = tol + 1
     i = 0
-    while ((tolerance > tol) & (i < max_iter)):
-        a_new = a_old + gamma * gradient(a_old)
-        tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-5)
-        a_old = a_new
-        i = i + 1
+    
+    if (solver == 'gradient'):
+        while ((tolerance > tol) & (i < max_iter)):
+            a_new = a_old + gamma * gradient(a_old)
+            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-5)
+            a_old = a_new
+            i = i + 1
+
+    if (solver == 'newton'):
+        while ((tolerance > tol) & (i < max_iter)):
+            a_new = a_old - gradient(a_old) / hessian(a_old)
+            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-5)
+            a_old = a_new
+            i = i + 1            
+
     return a_new
 
-
-def _run_alt(Y, N, Q, b_est, gamma, max_iter_inner, tol):
+def _run_alt(Y, N, Q, b_est, gamma, max_iter_inner, tol, solver):
     """
     Run the alternating minimization code
     """
     a_est = np.array([_rasch_alternating(Y, b_est, k, gamma,
-                                         max_iter_inner, tol)
+                                         max_iter_inner, tol, solver)
                       for k in range(0, N)])
     a_est = a_est - np.mean(a_est)
     b_est = np.array([_rasch_alternating(Y.T, a_est, k, gamma,
-                                         max_iter_inner, tol)
+                                         max_iter_inner, tol, solver)
                       for k in range(0, Q)])
     return a_est, b_est
 
 
 def _learn_rasch(Y, max_iter_inner, max_iter_outer, gamma, tol_inner,
-                 tol_outer, mu, verbose):
+                 tol_outer, mu, verbose, solver):
     """
     Main function for computing the Rasch model parameters
     """
 
     N, Q = np.shape(Y)
-    b_init = np.zeros((1, Q))
-    a_old, b_old = _run_alt(Y, N, Q, b_init, gamma, max_iter_inner, tol_inner)
+    b_init = np.zeros(((1, Q)))
+    a_old, b_old = _run_alt(Y, N, Q, b_init, gamma, 
+                            max_iter_inner, tol_inner, solver)
     tolerance = 1 + tol_outer
 
     def compute_tol(x, y): return np.linalg.norm(x-y) / np.linalg.norm(x)
+
     i = 1
-    if (verbose):
-        print("Iteration: " + str(i))
     while ((tolerance > tol_outer) & (i < max_iter_outer)):
+        if (verbose):
+            print("Iteration: " + str(i))
         a_new, b_new = _run_alt(Y, N, Q, b_old, gamma, max_iter_inner,
-                                tol_inner)
+                                tol_inner, solver)
         tolerance = compute_tol(a_new, a_old) + compute_tol(b_new, b_old)
         b_old = b_new
         a_old = a_new
         i = i + 1
-        if (verbose):
-            print("Iteration: " + str(i))
 
     return a_new, b_new, i
