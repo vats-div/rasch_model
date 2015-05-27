@@ -121,7 +121,7 @@ def _rasch_alternating(Y, b, k, gamma, max_iter, tol, solver):
     def gradient(a): 
         return (mu - np.sum(1 / (1+np.exp(-(a + b)))))
     def hessian(a):
-        tmp = np.sum(1 / ((1 + np.exp(-(a + b))) * ((1 + np.exp(a + b)))))
+        tmp = -np.sum(1 / ((1 + np.exp(-(a + b))) * ((1 + np.exp(a + b)))))
         return(tmp)
     
     tolerance = tol + 1
