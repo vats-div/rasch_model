@@ -2,8 +2,8 @@ from RaschModel import RaschModel
 from RaschModel import LearnRaschModel
 import numpy as np
 
-N = 100
-Q = 10
+N = 10
+Q = 100
 a = np.random.randn(N,1)
 b = np.random.randn(Q,1)
 rasch = RaschModel(a, b)

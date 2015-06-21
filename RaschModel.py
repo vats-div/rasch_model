@@ -102,21 +102,25 @@ class LearnRaschModel:
         -------
         RaschModel object
         """
-        a_est, b_est, n_iter = _learn_rasch(Y, self.max_iter_inner,
+        
+        # compute sufficient statistics
+        sum_item = np.nansum(Y, axis = 0)
+        sum_user = np.nansum(Y, axis = 1)
+        a_est, b_est, n_iter = _learn_rasch(sum_item, sum_user, 
+                                            self.max_iter_inner,
                                             self.max_iter_outer, self.gamma,
                                             self.tol_inner, self.tol_outer,
                                             self.mu, self.verbose, self.solver)
         return a_est, b_est, n_iter
 
 
-def _rasch_alternating(Y, b, k, gamma, max_iter, tol, solver):
+def _rasch_alternating(mu, b, dim, gamma, max_iter, tol, solver):
     """
     Logistic regression when fixing one of the Rasch model parameters
     """
     a_old = 0
     a_new = 0
-    mu = np.sum(Y[k, :])
-    gamma = gamma / np.shape(Y)[1]
+    gamma = gamma / dim
 
     def gradient(a): 
         return (mu - np.sum(1 / (1+np.exp(-(a + b)))))
@@ -143,29 +147,35 @@ def _rasch_alternating(Y, b, k, gamma, max_iter, tol, solver):
 
     return a_new
 
-def _run_alt(Y, N, Q, b_est, gamma, max_iter_inner, tol, solver):
+def _run_alt(sum_item, sum_user, N, Q, b_est, 
+             gamma, max_iter_inner, tol, solver):
     """
     Run the alternating minimization code
     """
-    a_est = np.array([_rasch_alternating(Y, b_est, k, gamma,
+    
+    a_est = np.array([_rasch_alternating(sum_user[k], b_est, Q, gamma,
                                          max_iter_inner, tol, solver)
                       for k in range(0, N)])
+    # makes the problem well-posed
+    # TODO: make this a user defined input with some 
+    #       other possible initial conditions
     a_est = a_est - np.mean(a_est)
-    b_est = np.array([_rasch_alternating(Y.T, a_est, k, gamma,
+    b_est = np.array([_rasch_alternating(sum_item[k], a_est, N, gamma,
                                          max_iter_inner, tol, solver)
                       for k in range(0, Q)])
     return a_est, b_est
 
 
-def _learn_rasch(Y, max_iter_inner, max_iter_outer, gamma, tol_inner,
-                 tol_outer, mu, verbose, solver):
+def _learn_rasch(sum_item, sum_user, max_iter_inner, max_iter_outer, gamma, 
+                 tol_inner, tol_outer, mu, verbose, solver):
     """
     Main function for computing the Rasch model parameters
     """
 
-    N, Q = np.shape(Y)
+    N = len(sum_user)
+    Q = len(sum_item)
     b_init = np.zeros(((1, Q)))
-    a_old, b_old = _run_alt(Y, N, Q, b_init, gamma, 
+    a_old, b_old = _run_alt(sum_item, sum_user, N, Q, b_init, gamma, 
                             max_iter_inner, tol_inner, solver)
     tolerance = 1 + tol_outer
 
@@ -175,8 +185,8 @@ def _learn_rasch(Y, max_iter_inner, max_iter_outer, gamma, tol_inner,
     while ((tolerance > tol_outer) & (i < max_iter_outer)):
         if (verbose):
             print("Iteration: " + str(i))
-        a_new, b_new = _run_alt(Y, N, Q, b_old, gamma, max_iter_inner,
-                                tol_inner, solver)
+        a_new, b_new = _run_alt(sum_item, sum_user, N, Q, b_old, gamma, 
+                                max_iter_inner, tol_inner, solver)
         tolerance = compute_tol(a_new, a_old) + compute_tol(b_new, b_old)
         b_old = b_new
         a_old = a_new
