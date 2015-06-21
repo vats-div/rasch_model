@@ -38,8 +38,6 @@ def test_learn_rasch_model():
                                                  max_iter_inner=100,
                                                  max_iter_outer=10) \
                                 .fit(Y)
-        print(a_est)
-        print(b_est)
-        print(b)
+
         assert_true((a_est[0] < 0) & (a_est[1] > 0))
         assert_true(np.sum(a_est) == 0)
