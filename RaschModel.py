@@ -31,17 +31,26 @@ class RaschModel:
         self.Q = len(b)
         self.a = np.reshape(a, (len(a), 1))
         self.b = np.reshape(b, (len(b), 1))
-        self.M = (self.a.dot(np.ones((1, self.Q))) +
-                  np.ones((self.N, 1)).dot(self.b.T))
+        
+    def get_user(self):
+        return self.a
+    
+    def get_item(self):
+        return self.b
 
     def sample(self):
         """ Sample a QxN matrix from the Rasch Model
+        Note: not memory efficient if Q or N are large
+        Mainly used for testing
         Returns
         -------
         N x Q binary matrix
         """
+        M = (self.a.dot(np.ones((1, self.Q))) +
+                  np.ones((self.N, 1)).dot(self.b.T))
+        
         def logit(x): return 1 / (1+np.exp(-x))
-        return (logit(self.M) > np.random.rand(self.N, self.Q)) * 1
+        return (logit(M) > np.random.rand(self.N, self.Q)) * 1
 
 
 class LearnRaschModel:
@@ -111,7 +120,20 @@ class LearnRaschModel:
                                             self.max_iter_outer, self.gamma,
                                             self.tol_inner, self.tol_outer,
                                             self.mu, self.verbose, self.solver)
+        
+        self.rm = RaschModel(a_est, b_est)
+        
         return a_est, b_est, n_iter
+    
+    def get_user(self):
+        """ Return user level parameters
+        """
+        return self.rm.get_user()
+    
+    def get_item(self):
+        """ Return item level parameters
+        """
+        return self.rm.get_item()
 
 
 def _rasch_alternating(mu, b, dim, gamma, max_iter, tol, solver):
