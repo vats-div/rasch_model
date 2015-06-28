@@ -5,6 +5,7 @@ Rasch Model
 # Author: Divyanshu Vats <vats.div@gmail.com>
 
 import numpy as np
+import pandas as pd
 
 
 class RaschModel:
@@ -31,10 +32,10 @@ class RaschModel:
         self.Q = len(b)
         self.a = np.reshape(a, (len(a), 1))
         self.b = np.reshape(b, (len(b), 1))
-        
+
     def get_user(self):
         return self.a
-    
+
     def get_item(self):
         return self.b
 
@@ -47,8 +48,8 @@ class RaschModel:
         N x Q binary matrix
         """
         M = (self.a.dot(np.ones((1, self.Q))) +
-                  np.ones((self.N, 1)).dot(self.b.T))
-        
+             np.ones((self.N, 1)).dot(self.b.T))
+
         def logit(x): return 1 / (1+np.exp(-x))
         return (logit(M) > np.random.rand(self.N, self.Q)) * 1
 
@@ -100,40 +101,71 @@ class LearnRaschModel:
         self.verbose = verbose
         self.solver = solver
 
-    def fit(self, Y):
-        """ Fit the model Rasch model given training data Y
+    def fit(self, data=None, user_id=None, item_id=None,
+            response=None, sum_user=None, sum_item=None):
+        """ Fit the model Rasch model given data
 
         Parameters
         ----------
-        Y : numpy array of shape N x Q
+        data : Either:
+                 1) ndarray, shape N x Q, where N is the number
+                    of users and Q is the number of items.
+                 2) pandas DataFrame
+        user_id : if data is a DataFrame, then column name of user id
+        item_id : if data is a DataFrame, then column name of item id
+        response : if data is a DataFrame, then column with response
 
         Returns
         -------
         RaschModel object
         """
-        
+
         # compute sufficient statistics
-        sum_item = np.nansum(Y, axis = 0)
-        sum_user = np.nansum(Y, axis = 1)
-        a_est, b_est, n_iter = _learn_rasch(sum_item, sum_user, 
+        if ((sum_user is None) and (sum_item is None)):
+            sum_user, sum_item = _get_item_user_sums(data, user_id,
+                                                     item_id, response)
+
+        a_est, b_est, n_iter = _learn_rasch(np.array(sum_item.values()),
+                                            np.array(sum_user.values()),
                                             self.max_iter_inner,
                                             self.max_iter_outer, self.gamma,
                                             self.tol_inner, self.tol_outer,
                                             self.mu, self.verbose, self.solver)
-        
+
         self.rm = RaschModel(a_est, b_est)
-        
-        return a_est, b_est, n_iter
-    
+        self.num_iter = n_iter
+
+        a_est = dict(zip(sum_user.keys(), a_est))
+        b_est = dict(zip(sum_item.keys(), b_est))
+
+        return a_est, b_est
+
     def get_user(self):
         """ Return user level parameters
         """
         return self.rm.get_user()
-    
+
     def get_item(self):
         """ Return item level parameters
         """
         return self.rm.get_item()
+
+
+def _get_item_user_sums(data, user_id, item_id, response):
+
+    if isinstance(data, np.ndarray):
+        sum_item = dict(pd.Series(np.nansum(data, axis=0)))
+        sum_user = dict(pd.Series(np.nansum(data, axis=1)))
+
+    if isinstance(data, pd.DataFrame):
+        sum_item = dict(data[[user_id, item_id, response]].
+                        groupby(item_id)[response].
+                        sum())
+        sum_user = dict(data[[user_id, item_id, response]].
+                        groupby(user_id)[response].
+                        sum())
+
+    return sum_user, sum_item
 
 
 def _rasch_alternating(mu, b, dim, gamma, max_iter, tol, solver):
@@ -144,72 +176,82 @@ def _rasch_alternating(mu, b, dim, gamma, max_iter, tol, solver):
     a_new = 0
     gamma = gamma / dim
 
-    def gradient(a): 
-        return (mu - np.sum(1 / (1+np.exp(-(a + b)))))
+    def gradient(a):
+        return (mu - np.nansum(1 / (1+np.exp(-(a + b)))))
+
     def hessian(a):
-        tmp = -np.sum(1 / ((1 + np.exp(-(a + b))) * ((1 + np.exp(a + b)))))
+        tmp = -np.nansum(1 / ((1 + np.exp(-(a + b))) * ((1 + np.exp(a + b)))))
         return(tmp)
-    
+
     tolerance = tol + 1
     i = 0
-    
+
     if (solver == 'gradient'):
         while ((tolerance > tol) & (i < max_iter)):
             a_new = a_old + gamma * gradient(a_old)
-            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-5)
+            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-10)
             a_old = a_new
             i = i + 1
 
     if (solver == 'newton'):
         while ((tolerance > tol) & (i < max_iter)):
             a_new = a_old - gradient(a_old) / hessian(a_old)
-            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-5)
+            tolerance = np.abs(a_new - a_old) / np.abs(a_new + 1e-10)
             a_old = a_new
-            i = i + 1            
+            i = i + 1
 
     return a_new
 
-def _run_alt(sum_item, sum_user, N, Q, b_est, 
+
+def _run_alt(sum_item, sum_user, N, Q, b_est,
              gamma, max_iter_inner, tol, solver):
     """
     Run the alternating minimization code
     """
-    
+
     a_est = np.array([_rasch_alternating(sum_user[k], b_est, Q, gamma,
                                          max_iter_inner, tol, solver)
                       for k in range(0, N)])
+
     # makes the problem well-posed
-    # TODO: make this a user defined input with some 
+    # TODO: make this a user defined input with some
     #       other possible initial conditions
-    a_est = a_est - np.mean(a_est)
+    a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)])
     b_est = np.array([_rasch_alternating(sum_item[k], a_est, N, gamma,
                                          max_iter_inner, tol, solver)
                       for k in range(0, Q)])
+
     return a_est, b_est
 
 
-def _learn_rasch(sum_item, sum_user, max_iter_inner, max_iter_outer, gamma, 
+def _learn_rasch(sum_item, sum_user, max_iter_inner, max_iter_outer, gamma,
                  tol_inner, tol_outer, mu, verbose, solver):
     """
     Main function for computing the Rasch model parameters
     """
 
+    sum_item = sum_item.astype(float)
+    sum_user = sum_user.astype(float)
     N = len(sum_user)
     Q = len(sum_item)
     b_init = np.zeros(((1, Q)))
-    a_old, b_old = _run_alt(sum_item, sum_user, N, Q, b_init, gamma, 
+    b_init = (sum_item - np.nanmean(sum_item)) / np.nanstd(sum_item)
+    a_old, b_old = _run_alt(sum_item, sum_user, N, Q, b_init, gamma,
                             max_iter_inner, tol_inner, solver)
     tolerance = 1 + tol_outer
 
-    def compute_tol(x, y): return np.linalg.norm(x-y) / np.linalg.norm(x)
+    def _compute_tolerance(a, b):
+        ind = (~np.isinf(a) & ~np.isinf(b))
+        return np.linalg.norm(a[ind] - b[ind]) / np.linalg.norm(a[ind] + 1e-10)
 
     i = 1
     while ((tolerance > tol_outer) & (i < max_iter_outer)):
         if (verbose):
             print("Iteration: " + str(i))
-        a_new, b_new = _run_alt(sum_item, sum_user, N, Q, b_old, gamma, 
+        a_new, b_new = _run_alt(sum_item, sum_user, N, Q, b_old, gamma,
                                 max_iter_inner, tol_inner, solver)
-        tolerance = compute_tol(a_new, a_old) + compute_tol(b_new, b_old)
+        tolerance = _compute_tolerance(a_new, a_old) +\
+            _compute_tolerance(b_new, b_old)
         b_old = b_new
         a_old = a_new
         i = i + 1
