@@ -27,17 +27,16 @@ def test_raschmodel_init():
 def test_learn_rasch_model():
     # Test Rasch Model Learning for a simple example
 
-    a = [-0.3, 0.3]
+    a = [-0.5, 0.5]
     b = np.random.randn(100, 1)
     rm = RaschModel(a, b)
     Y = RaschModel(a, b).sample()
 
-    for solver in ['gradient', 'newton']:
-        a_est, b_est, num_iter = LearnRaschModel(solver=solver,
-                                                 verbose=False,
-                                                 max_iter_inner=100,
-                                                 max_iter_outer=10) \
-                                .fit(Y)
-
-        assert_true((a_est[0] < 0) & (a_est[1] > 0))
-        assert_true(np.sum(a_est) == 0)
+    lrm = LearnRaschModel(verbose=False,
+                          max_iter_inner=100,
+                          max_iter_outer=10)
+    lrm.fit(Y)
+    a_est = lrm.get_user()
+    print a_est
+    assert_true((a_est[0] < 0) & (a_est[1] > 0))
+    assert_true(np.sum(a_est) == 0)
