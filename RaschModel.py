@@ -65,10 +65,7 @@ class LearnRaschModel:
     gamma : float (default : 1.0)
         shrinkage parameter for gradient descent
 
-    tol_inner : float (default : 1e-5)
-        Stopping criteria in the inner computations
-
-    tol_outer : float (default : 1e-5)
+    tol : float (default : 1e-5)
         Stopping criteria in the inner computations
 
     mu : float (default : 0.0)
@@ -81,14 +78,13 @@ class LearnRaschModel:
         if True, then prints iterations
     """
 
-    def __init__(self, max_iter_inner=5, max_iter_outer=30, gamma=1.0,
-                 tol_inner=1e-5, tol_outer=1e-5, mu=0.0,
+    def __init__(self, max_iter_inner=5, max_iter_outer=30, 
+                 gamma=1.0, tol=1e-5, mu=0.0,
                  solver='gradient', verbose=False):
         self.max_iter_inner = max_iter_inner
         self.max_iter_outer = max_iter_outer
         self.gamma = gamma
-        self.tol_inner = tol_inner
-        self.tol_outer = tol_outer
+        self.tol = tol
         self.mu = mu
         self.verbose = verbose
         self.solver = solver
@@ -117,6 +113,10 @@ class LearnRaschModel:
         
         # compute sufficient statistics if not available
         if ((sum_user is None) and (sum_item is None)):
+            self.data = data
+            self.user_id = user_id
+            self.item_id = item_id
+            self.response = response
             sum_user, sum_item = _get_item_user_sums(data, user_id,
                                                      item_id, response)
         self.N, self.Q = (len(sum_user), len(sum_item))
@@ -138,7 +138,7 @@ class LearnRaschModel:
     def recommend(self, user_key, k=5):
         
         # compute probability of each item
-        tmp = dict(zip(self.b_est.keys(), 
+        tmp = dict(zip(self.b_est.keys(),
                        1 / (1+np.exp(-(self.a_est[user_key] + 
                                        self.b_est.values())))))
 
@@ -148,26 +148,21 @@ class LearnRaschModel:
         """
         Main function for computing the Rasch model parameters
         """
-        
         sum_user = sum_user.astype(float)    
         sum_item = sum_item.astype(float)
         
         def norm_vector(x): return (x - np.nanmean(x)) / np.nanstd(x)
         
-        a_old, b_old = self._run_alt(sum_item, sum_user, 
-                                     norm_vector(sum_user),
-                                     norm_vector(sum_item))
-    
+        a_old, b_old = norm_vector(sum_user), norm_vector(sum_item)
+            
         for i in range(self.max_iter_outer):
             a_new, b_new = self._run_alt(sum_item, sum_user, a_old, b_old)
             tol = _c_tol(a_new, a_old) + _c_tol(b_new, b_old)
-            if (tol < self.tol_inner):
-                break
+            if (tol < self.tol): break
             b_old = b_new
             a_old = a_new
             if (self.verbose):
                 print("Iteration: " + str(i) + ", tolerance: " + str(tol))
-
 
         return a_new, b_new, i
 
@@ -175,41 +170,45 @@ class LearnRaschModel:
         """
         Run the alternating minimization code
         """
-    
+
         a_est = np.array([self._rasch_alternating(sum_user[k], a_est[k], b_est)
                           for k in range(0, self.N)])
 
         # makes the problem well-posed
-        # TODO: make this a user defined input with some
-        #       other possible initial conditions
-        a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)])
+        a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)]) +  self.mu
         b_est = np.array([self._rasch_alternating(sum_item[k], b_est[k], a_est)
                           for k in range(0, self.Q)])
     
         return a_est, b_est
 
-    def _rasch_alternating(self, sum_y, a_init, b):
+    def _rasch_alternating(self, sum_y, a_est, b):
         """
         Logistic regression when fixing one of the Rasch model parameters
         """
-        a_old = a_init
-    
-        def gradient(a):
-            return (sum_y - np.nansum(1 / (1+np.exp(-(a + b)))))
-        
+
         grad_sum = 0
+
+        def gradient(a):
+            return (sum_y - np.nansum(1 / (1 + np.exp(-(a + b)))))
         
         for i in range(self.max_iter_inner):
-            grad_temp = gradient(a_old)
+            grad_temp = gradient(a_est)
             grad_sum += np.square(grad_temp)
-            a_new = a_old + self.gamma * gradient(a_old) / np.sqrt(grad_sum)
-            tol = np.abs(a_new - a_old) / np.abs(a_new + 1e-10)
-            if (tol > self.tol_inner):
-                break
-            a_old = a_new
-            
-        return a_new
+            a_est = a_est + self.gamma * gradient(a_est) / np.sqrt(grad_sum)
+
+        return a_est
+     
+    def likelihood(self):
         
+        # \sum_{i,j} y_{i,j} (a_i + b_j) - log(1 + exp(a_i + b_j))
+        ind_u = self.data[self.user_id]
+        ind_i = self.data[self.item_id]
+        def compute_sum(k): 
+            return self.a_est[ind_u[k]] + self.b_est[ind_i[k]]
+
+        c = [compute_sum(k) for k in range(len(self.data))]
+        return np.sum(c * self.data[self.response] - np.log(1 + np.exp(c)))
+
     def get_user(self):
         """ Return user level parameters
         """
