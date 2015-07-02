@@ -7,7 +7,9 @@ Rasch Model
 import numpy as np
 import pandas as pd
 from operator import itemgetter
+import argparse
 import time
+
 
 class RaschModel:
     """ Rasch Model for modeling a binary matrix
@@ -45,8 +47,7 @@ class RaschModel:
         M = (self.a.dot(np.ones((1, self.Q))) +
              np.ones((self.N, 1)).dot(self.b.T))
 
-        def logit(x): return 1 / (1+np.exp(-x))
-        return (logit(M) > np.random.rand(self.N, self.Q)) * 1
+        return (_logit(M) > np.random.rand(self.N, self.Q)) * 1
 
 
 class LearnRaschModel:
@@ -74,22 +75,26 @@ class LearnRaschModel:
         solution.  In the computations, we assume that mean(a) = mu, where a
         are the user level parameters
 
+    approx_grad : boot (default : True)
+        Whether the gradient should be approximated to avoid excessive
+        computations
+
     verbose: boolean (default: True)
         if True, then prints iterations
     """
 
-    def __init__(self, max_iter_inner=5, max_iter_outer=30, 
+    def __init__(self, max_iter_inner=5, max_iter_outer=30,
                  gamma=1.0, tol=1e-5, mu=0.0,
-                 solver='gradient', verbose=False):
+                 approx_grad=True, verbose=False):
         self.max_iter_inner = max_iter_inner
         self.max_iter_outer = max_iter_outer
         self.gamma = gamma
         self.tol = tol
         self.mu = mu
         self.verbose = verbose
-        self.solver = solver
+        self.approx_grad = approx_grad
 
-    def fit(self, data=None, user_id=None, item_id=None, response=None, 
+    def fit(self, data=None, user_id=None, item_id=None, response=None,
             sum_user=None, sum_item=None, inplace=False):
         """ Fit the model Rasch model given data
 
@@ -110,7 +115,7 @@ class LearnRaschModel:
         """
 
         time_begin = time.time()
-        
+
         # compute sufficient statistics if not available
         if ((sum_user is None) and (sum_item is None)):
             self.data = data
@@ -120,27 +125,28 @@ class LearnRaschModel:
             sum_user, sum_item = _get_item_user_sums(data, user_id,
                                                      item_id, response)
         self.N, self.Q = (len(sum_user), len(sum_item))
+        self.grad_user = np.zeros((self.N, 1))
+        self.grad_item = np.zeros((self.Q, 1))
 
         a_est, b_est, n_iter = self._learn_rasch(np.array(sum_user.values()),
                                                  np.array(sum_item.values()))
 
         time_end = time.time()
-        
+
         # save model parameters
-        self.time_taken = time_end - time_begin        
+        self.time_taken = time_end - time_begin
         self.a_est = dict(zip(sum_user.keys(), a_est))
-        self.b_est = dict(zip(sum_item.keys(), b_est))         
+        self.b_est = dict(zip(sum_item.keys(), b_est))
         self.num_iter = n_iter
-        
-        if (inplace == False):
+
+        if (inplace is False):
             return self.a_est, self.b_est
-    
+
     def recommend(self, user_key, k=5):
-        
+
         # compute probability of each item
         tmp = dict(zip(self.b_est.keys(),
-                       1 / (1+np.exp(-(self.a_est[user_key] + 
-                                       self.b_est.values())))))
+                       _logit(self.a_est[user_key] + self.b_est.values())))
 
         return sorted(tmp.items(), key=itemgetter(1), reverse=True)[:k]
 
@@ -148,66 +154,120 @@ class LearnRaschModel:
         """
         Main function for computing the Rasch model parameters
         """
-        sum_user = sum_user.astype(float)    
-        sum_item = sum_item.astype(float)
-        
+        sum_user = np.expand_dims(sum_user.astype(float), 1)
+        sum_item = np.expand_dims(sum_item.astype(float), 1)
+
         def norm_vector(x): return (x - np.nanmean(x)) / np.nanstd(x)
-        
+
         a_old, b_old = norm_vector(sum_user), norm_vector(sum_item)
-            
+
         for i in range(self.max_iter_outer):
             a_new, b_new = self._run_alt(sum_item, sum_user, a_old, b_old)
             tol = _c_tol(a_new, a_old) + _c_tol(b_new, b_old)
-            if (tol < self.tol): break
+            if (tol < self.tol):
+                break
             b_old = b_new
             a_old = a_new
             if (self.verbose):
                 print("Iteration: " + str(i) + ", tolerance: " + str(tol))
 
-        return a_new, b_new, i
+        return np.reshape(a_new, self.N), np.reshape(b_new, self.Q), i
 
     def _run_alt(self, sum_item, sum_user, a_est, b_est):
         """
         Run the alternating minimization code
         """
 
-        a_est = np.array([self._rasch_alternating(sum_user[k], a_est[k], b_est)
-                          for k in range(0, self.N)])
-
+        a_est = self._rasch_alternating(sum_user, a_est, b_est, True)
         # makes the problem well-posed
-        a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)]) +  self.mu
-        b_est = np.array([self._rasch_alternating(sum_item[k], b_est[k], a_est)
-                          for k in range(0, self.Q)])
-    
+        a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)]) + self.mu
+
+        b_est = self._rasch_alternating(sum_item, b_est, a_est, False)
+
         return a_est, b_est
 
-    def _rasch_alternating(self, sum_y, a_est, b):
+    def _rasch_alternating(self, sum_y, a_est, b, user):
         """
         Logistic regression when fixing one of the Rasch model parameters
         """
+        if user:
+            grad_sum = self.grad_user
+        else:
+            grad_sum = self.grad_item
 
-        grad_sum = 0
+        # check if the gradient should be approximated
+        if (self.approx_grad is True):
+            b_sum = list()
+            b_sum.append(np.nansum(1.0 / (np.exp(-1.0) + np.exp(-b))))
+            b_sum.append(np.nansum(1.0 / (np.exp(0.0) + np.exp(-b))))
+            b_sum.append(np.nansum(1.0 / (np.exp(1.0) + np.exp(-b))))
+            grad_func = self._approx_gradient
+        else:
+            b_sum = b
+            grad_func = self._exact_gradient
 
-        def gradient(a):
-            return (sum_y - np.nansum(1 / (1 + np.exp(-(a + b)))))
-        
         for i in range(self.max_iter_inner):
-            grad_temp = gradient(a_est)
+            grad_temp = grad_func(sum_y, a_est, b_sum)
             grad_sum += np.square(grad_temp)
-            a_est = a_est + self.gamma * gradient(a_est) / np.sqrt(grad_sum)
+            a_est = a_est + self.gamma * grad_temp / np.sqrt(grad_sum)
+
+        if user:
+            self.grad_user = grad_sum
+        else:
+            self.grad_item = grad_sum
 
         return a_est
-     
+
+    def _exact_gradient(self, sum_y, a, b):
+        """ Exact gradient, but memory intensive for large data """
+        M = a + b.T
+        tmp = np.expand_dims(np.nansum(1.0 / (1.0 + np.exp(-M)), axis=1), 1)
+        return (sum_y - tmp)
+
+    def _approx_gradient(self, sum_y, a, b):
+        """ Approx gradient, suitable when N or Q is large """
+        ind_0 = (a < -0.5)
+        ind_1 = (a >= -0.5) & (a <= 1.5)
+        ind_2 = (a > 1.5)
+        tmp = np.zeros(np.shape(sum_y))
+        tmp[ind_0] = np.exp(a[ind_0]) * b[0]
+        tmp[ind_1] = np.exp(a[ind_1]) * b[1]
+        tmp[ind_2] = np.exp(a[ind_2]) * b[2]
+
+        return (sum_y - tmp)
+
     def likelihood(self):
-        
+
         # \sum_{i,j} y_{i,j} (a_i + b_j) - log(1 + exp(a_i + b_j))
         ind_u = self.data[self.user_id]
         ind_i = self.data[self.item_id]
-        def compute_sum(k): 
+
+        def compute_sum(k):
             return self.a_est[ind_u[k]] + self.b_est[ind_i[k]]
 
         c = [compute_sum(k) for k in range(len(self.data))]
         return np.sum(c * self.data[self.response] - np.log(1 + np.exp(c)))
+
+    def predict(self, data, user_id, item_id):
+
+        pr = np.zeros((len(data), 1))
+        a_est = self.a_est
+        b_est = self.b_est
+        mean_a = np.mean(a_est.values())
+        mean_b = np.mean(b_est.values())
+        for i in range(len(data)):
+            if data.ix[i][user_id] in a_est:
+                a_temp = a_est[data.ix[i][user_id]]
+            else:
+                a_temp = mean_a
+            if data.ix[i][item_id] in b_est:
+                b_temp = b_est[data.ix[i][item_id]]
+            else:
+                b_temp = mean_b
+
+            pr[i] = _logit(a_temp + b_temp)
+
+        return pr
 
     def get_user(self):
         """ Return user level parameters
@@ -218,7 +278,7 @@ class LearnRaschModel:
         """ Return item level parameters
         """
         return self.b_est.values()
-    
+
 
 def _c_tol(a, b):
     ind = (~np.isinf(a) & ~np.isinf(b))
@@ -242,3 +302,59 @@ def _get_item_user_sums(data, user_id, item_id, response):
     return sum_user, sum_item
 
 
+def _logit(a):
+    return (1.0 / (1.0 + np.exp(-a)))
+
+
+def main(ns):
+    file_train = ns.train
+    file_test = ns.test
+    print ns.header
+    train_data = pd.read_table(file_train, header=ns.header, sep=',')
+    train_data[ns.response] = (train_data[ns.response] > 0) * 1
+    test_data = pd.read_table(file_test, header=ns.header, sep=ns.sep)
+
+    lrm = LearnRaschModel(max_iter_outer=10, max_iter_inner=1,
+                          approx_grad=True, verbose=True)
+    lrm.fit(train_data, user_id=ns.user_id, item_id=ns.item_id,
+            response=ns.response)
+
+    pr = lrm.predict(test_data, user_id=ns.user_id, item_id=ns.item_id)
+    test_data["irt.urlbuy"] = pr
+    print "Saving CSV file to " + ns.output
+    test_data.to_csv(ns.output,
+                     columns=[ns.user_id, ns.item_id, "irt.urlbuy"],
+                     index=False)
+
+if __name__ == '__main__':
+
+    lrm = LearnRaschModel()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train',
+                        help="path to training data",
+                        required=True)
+    parser.add_argument('--test',
+                        help="path to testing data",
+                        required=True),
+    parser.add_argument('--user_id',
+                        help="name of the column that contains user id",
+                        required=True),
+    parser.add_argument('--item_id',
+                        help="name of the column that contains item id",
+                        required=True),
+    parser.add_argument('--response',
+                        help="name of the column that contains the response",
+                        required=True),
+    parser.add_argument('--output',
+                        help="name of file to save the user, item\
+                        probabilities",
+                        required=True)
+    parser.add_argument('--header',
+                        help="row number in data that corresponds to header",
+                        nargs='?', default=0)
+    parser.add_argument('--sep',
+                        help="separator in train/test data that distringuishes\
+                        columns",
+                        nargs='?', default=',')
+    ns = parser.parse_args()
+    main(ns)
