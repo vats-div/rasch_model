@@ -2,4 +2,6 @@
 *.project
 *.pydevproject
 *.csv
+*.swp
 data/
+test_private.py
