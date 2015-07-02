@@ -1,22 +1,32 @@
-from RaschModel import RaschModel
 from RaschModel import LearnRaschModel
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_auc_score
 
 """
-N = 10
-Q = 100
-a = np.random.randn(N,1)
-b = np.random.randn(Q,1)
-rasch = RaschModel(a, b)
-Y = rasch.sample()
-a_est, b_est, num_iter = LearnRaschModel(solver='newton').fit(Y)
+For this example to work, download the smallest movielens data:
+http://files.grouplens.org/datasets/movielens/ml-100k.zip
 """
 
-df = pd.read_table("./data/ml-100k/u.data", header=-1)
-df[2] = (df[2] > 3) * 1
+# setup initial params
+thresh = 4
 
-lrm = LearnRaschModel(solver='gradient', max_iter_outer=10, gamma=0.1, max_iter_inner=10, verbose=True)
-lrm.fit(df, user_id=0, item_id=1, response=2, inplace=True)
+# read training and testing data
+df_train = pd.read_table("data/ml-100K/u1.base", header=-1)
+df_test = pd.read_table("data/ml-100K/u1.test", header=-1)
 
+# binarize ratings for the example to work
+df_train[2] = (df_train[2] > thresh) * 1
+df_test[2] = (df_test[2] > thresh) * 1
 
+# initialize class for learning rasch model using default params
+lrm = LearnRaschModel(verbose=True)
+
+# fix model on training data
+lrm.fit(df_train, user_id=0, item_id=1, response=2, inplace=True)
+
+print "Time taken: " + str(lrm.time_taken)
+
+pr = lrm.predict(df_test, user_id=0, item_id=1)
+
+print "AUC on test data: " + str(roc_auc_score(df_test[2], pr))
