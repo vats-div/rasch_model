@@ -20,12 +20,14 @@ df_train[2] = (df_train[2] > thresh) * 1
 df_test[2] = (df_test[2] > thresh) * 1
 
 # initialize class for learning rasch model using default params
-lrm = LearnRaschModel(verbose=True)
+lrm = LearnRaschModel(verbose=True, approx_grad=True, max_iter_inner=1, max_iter_outer=50, gamma = 10.0)
 
 # fix model on training data
 lrm.fit(df_train, user_id=0, item_id=1, response=2, inplace=True)
 
 print "Time taken: " + str(lrm.time_taken)
+
+print lrm.likelihood()
 
 pr = lrm.predict(df_test, user_id=0, item_id=1)
 

@@ -32,8 +32,7 @@ def test_learn_rasch_model():
     rm = RaschModel(a, b)
     Y = RaschModel(a, b).sample()
 
-    lrm = LearnRaschModel(verbose=False,
-                          max_iter_inner=2)
+    lrm = LearnRaschModel(verbose=False, max_iter_inner=2)
     lrm.fit(Y)
     a_est = lrm.get_user()
     assert_true((a_est[0] < 0) & (a_est[1] > 0))
