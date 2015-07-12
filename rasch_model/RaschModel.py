@@ -83,10 +83,14 @@ class LearnRaschModel:
 
     verbose: boolean (default: True)
         if True, then prints iterations
+
+    init: string (default: random)
+          initialization to use, either random or zeros
     """
 
     def __init__(self, max_iter_inner=1, max_iter=30, alpha=0.0,
-                 gamma=1.0, tol=1e-5, mu=0.0, seed=1, verbose=False):
+                 gamma=1.0, tol=1e-5, mu=0.0, seed=1, 
+                 verbose=False, init='random'):
         self.max_iter_inner = max_iter_inner
         self.max_iter = max_iter
         self.gamma = gamma
@@ -95,6 +99,7 @@ class LearnRaschModel:
         self.verbose = verbose
         self.seed = seed
         self.alpha = alpha
+        self.init = init
 
     def fit(self, data=None, user_id=0, item_id=1, response=2,
             sum_user=None, sum_item=None, inplace=False):
@@ -173,24 +178,28 @@ class LearnRaschModel:
         sum_item = np.expand_dims(sum_item.astype(float), 1)
 
         np.random.seed(self.seed)
-        a_old = np.random.normal(size=np.shape(sum_user))
-        b_old = np.random.normal(size=np.shape(sum_item))
+        if self.init is 'random':
+            a_old = np.random.normal(size=np.shape(sum_user))
+            b_old = np.random.normal(size=np.shape(sum_item))
+        else:
+            a_old = np.zeros((self.N, 1))
+            b_old = np.zeros((self.Q, 1))
 
         logL_old = self.likelihood(a_old, b_old)
 
         for i in range(self.max_iter):
             a_new, b_new = self._run_alt(sum_item, sum_user, a_old, b_old)
-            tol = _c_tol(a_new, a_old) + _c_tol(b_new, b_old)
             logL_new = self.likelihood(a_new, b_new)
-            tol = _c_tol(logL_old, logL_new)
-            if (tol < self.tol):
+            tol = (logL_new - logL_old)
+            if (self.verbose):
+                print("Iteration: " + str(i) + ", logL: " + str(logL_new))
+            if (tol < 0):
+                a_new = a_old
+                b_new = b_new
                 break
             b_old = b_new
             a_old = a_new
             logL_old = logL_new
-            if (self.verbose):
-                print("Iteration: " + str(i) + ", logL: " +
-                      str(logL_new) + ", tol: " + str(tol))
 
         return np.reshape(a_new, self.N), np.reshape(b_new, self.Q), i
 

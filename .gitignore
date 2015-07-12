@@ -5,3 +5,5 @@
 *.swp
 data/
 test_private.py
+*.ipynb
+.ipynb_checkpoints
