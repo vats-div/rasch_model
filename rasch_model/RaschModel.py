@@ -86,11 +86,14 @@ class LearnRaschModel:
 
     init: string (default: random)
           initialization to use, either random or zeros
+
+    model: str (default: rasch)
+           type of model to fit.  either 'rasch' or '2PL'
     """
 
     def __init__(self, max_iter_inner=1, max_iter=30, alpha=0.0,
-                 gamma=1.0, tol=1e-5, mu=0.0, seed=1, 
-                 verbose=False, init='random'):
+                 gamma=1.0, tol=1e-5, mu=0.0, seed=1,
+                 verbose=False, init='random', model='rasch'):
         self.max_iter_inner = max_iter_inner
         self.max_iter = max_iter
         self.gamma = gamma
@@ -100,9 +103,10 @@ class LearnRaschModel:
         self.seed = seed
         self.alpha = alpha
         self.init = init
+        self.model = model
 
     def fit(self, data=None, user_id=0, item_id=1, response=2,
-            sum_user=None, sum_item=None, inplace=False):
+            sum_user=None, sum_item=None):
         """ Fit the model Rasch model given data
 
         Parameters
@@ -114,7 +118,6 @@ class LearnRaschModel:
         user_id : if data is a DataFrame, then column name of user id
         item_id : if data is a DataFrame, then column name of item id
         response : if data is a DataFrame, then column with response
-        inplace : If True, then returns the parameters
 
         Returns
         -------
@@ -131,36 +134,40 @@ class LearnRaschModel:
             self.user_id = user_id
             self.item_id = item_id
             self.response = response
-            sum_user, sum_item = self._get_item_user_sums()
+            sum_user, sum_item = self._get_item_user_sums(self.data)
 
         self.N, self.Q = (len(sum_user), len(sum_item))
 
-        # if data only has positive values, make a note of that
-        if (np.all(self.data[response])):
-            self.all_pos = True
-        else:
-            self.all_pos = False
+        self._save_params()
 
         # get user and item indices and store as
         # dataframe of observed indices
+        # self.obser has columns 'index_user' and 'index_item'
         self.obser = self._get_observed_indices(sum_user, sum_item)
+
+        a_est, b_est, s_est = self._learn_rasch(np.array(sum_user.values()),
+                                                np.array(sum_item.values()))
+        time_end = time.time()
+
+        # save model parameters as a dictionary
+        self.time_taken = time_end - time_begin
+        self.a_est = dict(zip(sum_user.keys(), a_est))
+        self.b_est = dict(zip(sum_item.keys(), b_est))
+
+        # if model is 2PL, then save s_est
+        if self.model is '2PL':
+            self.s_est = dict(zip(sum_item.keys(), s_est))
+
+    def _save_params(self):
+        """ save model parameters
+        """
 
         # initialize user and item gradients
         self.grad_user = np.zeros((self.N, 1))
         self.grad_item = np.zeros((self.Q, 1))
 
-        a_est, b_est, n_iter = self._learn_rasch(np.array(sum_user.values()),
-                                                 np.array(sum_item.values()))
-        time_end = time.time()
-
-        # save model parameters
-        self.time_taken = time_end - time_begin
-        self.a_est = dict(zip(sum_user.keys(), a_est))
-        self.b_est = dict(zip(sum_item.keys(), b_est))
-        self.num_iter = n_iter
-
-        if (inplace is False):
-            return self.a_est, self.b_est
+        if self.model is '2PL':
+            self.grad_slope = np.zeros((self.Q, 1))
 
     def recommend(self, user_key, k=5):
 
@@ -174,49 +181,75 @@ class LearnRaschModel:
         """
         Main function for computing the Rasch model parameters
         """
-        sum_user = np.expand_dims(sum_user.astype(float), 1)
-        sum_item = np.expand_dims(sum_item.astype(float), 1)
 
+        # ensure right dimensions, i.e., column vectors
+        sum_user = _fc(sum_user.astype(float))
+        sum_item = _fc(sum_item.astype(float))
+
+        # set random seed
         np.random.seed(self.seed)
+
+        # initialization
         if self.init is 'random':
-            a_old = np.random.normal(size=np.shape(sum_user))
-            b_old = np.random.normal(size=np.shape(sum_item))
+            a_old = np.random.normal(size=(self.N, 1))
+            b_old = np.random.normal(size=(self.Q, 1))
         else:
             a_old = np.zeros((self.N, 1))
             b_old = np.zeros((self.Q, 1))
 
+        # initialize s_old to None
+        if self.model is '2PL':
+            s_old = np.ones((self.Q, 1))
+        else:
+            s_old = None
+
+        # don't really need s_old since s is initialized to all ones
         logL_old = self.likelihood(a_old, b_old)
 
         for i in range(self.max_iter):
-            a_new, b_new = self._run_alt(sum_item, sum_user, a_old, b_old)
-            logL_new = self.likelihood(a_new, b_new)
-            tol = (logL_new - logL_old)
+            a_new, b_new, s_new = self._run_alt(sum_item, sum_user,
+                                                a_old, b_old, s_old)
+
+            # need to update sum_user and sum_item for 2PL
+            if self.model is '2PL':
+                sum_user, sum_item = self._update_item_user_sums(s_new)
+
+            logL_new = self.likelihood(a_new, b_new, s_new)
             if (self.verbose):
                 print("Iteration: " + str(i) + ", logL: " + str(logL_new))
-            if (tol < 0):
-                a_new = a_old
-                b_new = b_new
+            if ((logL_new - logL_old) < 0):
                 break
             b_old = b_new
             a_old = a_new
+            s_old = s_new
             logL_old = logL_new
 
-        return np.reshape(a_new, self.N), np.reshape(b_new, self.Q), i
+        # save total number of iterations
+        self.num_iter = i
 
-    def _run_alt(self, sum_item, sum_user, a_est, b_est):
+        if self.model is '2PL':
+            s_old = np.reshape(s_old, self.Q)
+
+        return np.reshape(a_old, self.N), np.reshape(b_old, self.Q), s_old
+
+    def _run_alt(self, sum_item, sum_user, a_est, b_est, s_est=None):
         """
         Run the alternating minimization code
         """
 
-        a_est = self._rasch_alternating(sum_user, a_est, b_est, True)
+        a_est = self._rasch_alternating(sum_user, a_est, b_est, s_est, True)
         # makes the problem well-posed
         a_est = a_est - np.nanmean(a_est[~np.isinf(a_est)]) + self.mu
 
-        b_est = self._rasch_alternating(sum_item, b_est, a_est, False)
+        b_est = self._rasch_alternating(sum_item, b_est, a_est, s_est, False)
 
-        return a_est, b_est
+        if self.model is '2PL':
+            s_est = self._compute_slope(s_est, a_est, b_est)
+            s_est = np.float(self.Q) * s_est / np.linalg.norm(s_est, 1)
 
-    def _rasch_alternating(self, sum_y, a_est, b, user):
+        return a_est, b_est, s_est
+
+    def _rasch_alternating(self, sum_y, a_est, b, s_est, user):
         """
         Logistic regression when fixing one of the Rasch model parameters
         """
@@ -232,7 +265,7 @@ class LearnRaschModel:
         grad_func = self._exact_gradient
 
         for i in range(self.max_iter_inner):
-            grad_temp = grad_func(sum_y, a_est, b, ind1, ind2)
+            grad_temp = grad_func(sum_y, a_est, b, s_est, ind1, ind2)
             grad_sum += np.square(grad_temp)
             a_est = a_est + self.gamma * grad_temp / np.sqrt(grad_sum)
 
@@ -243,31 +276,60 @@ class LearnRaschModel:
 
         return a_est
 
-    def _exact_gradient(self, sum_y, a, b, ind1, ind2):
-        """ Exact gradient, but memory intensive for large data """
+    def _exact_gradient(self, sum_y, a, b, s, ind1, ind2):
+        """ Exact gradient, but may be memory intensive for large data """
 
-        if (self.all_pos is False):
-            self.obser['val'] = _logit(a[self.obser[ind1]] +
-                                       b[self.obser[ind2]])
-            tmp = self.obser.groupby(ind1)['val'].sum().values
+        if s is not None:
+            s_temp = s[self.obser['index_item']]
         else:
-            tmp = np.nansum(_logit(a + b.T), axis=1)
-        return (sum_y - np.expand_dims(tmp, 1)) - self.alpha * 2 * a
+            s_temp = 1.0
 
-    def likelihood(self, a=None, b=None):
+        self.obser['val'] = _logit(a[self.obser[ind1]] +
+                                   b[self.obser[ind2]]) * s_temp
 
-        # \sum_{i,j} y_{i,j} (a_i + b_j) - log(1 + exp(a_i + b_j))
-        if ((a is None) and (b is None)):
-            a = np.array(self.get_user())
-            b = np.array(self.get_item())
+        tmp = self.obser.groupby(ind1)['val'].sum().values
+
+        return (sum_y - _fc(tmp)) - self.alpha * 2 * a
+
+    def _compute_slope(self, s_est, a_est, b_est):
+	""" Compute the slope parameter per item
+        """
+
+        def _slope_grad():
+            """
+            \sum_{i} [y_{ij}(a_i+b_j) - logit(s_j(a_i+b_j)) * (a_i+b_j)]
+            """
+            sum_ab = (a_est[self.obser['index_user']] +
+                      b_est[self.obser['index_item']])
+            sum_abs = s_est[self.obser['index_item']] * sum_ab
+            self.obser['val'] = _fc(self.data[self.response].values) *\
+                                sum_ab - _logit(sum_abs) * sum_ab
+            tmp = self.obser.groupby('index_item')['val'].sum().values
+            return _fc(tmp)
+
+        grad_temp = _slope_grad()
+        self.grad_slope = self.grad_slope + np.square(grad_temp)
+
+        return (s_est +
+                1.0 * self.gamma * grad_temp / np.sqrt(self.grad_slope))
+
+    def likelihood(self, a=None, b=None, s=None):
+
+        # \sum_{i,j} y_{i,j} s_j(a_i + b_j) - log(1 + exp(s_j(a_i + b_j)))
+        if ((a is None) and (b is None) and (s is None)):
+            a = np.array(self.a_est.values())
+            b = np.array(self.b_est.values())
+
+            if self.model is '2PL':
+                s = np.array(self.a_est.values())
 
         c = a[self.obser['index_user']] + b[self.obser['index_item']]
-        if (self.all_pos is False):
-            first_term = np.nansum(c[self.data[self.response].values > 0])
-            second_term = np.nansum(np.log(1 + np.exp(c)))
-        else:
-            first_term = np.nansum(c)
-            second_term = np.nansum(np.log(1 + np.exp((a + b.T).flatten())))
+
+        if (self.model is '2PL') and (s is not None):
+            c = s[self.obser['index_item']] * c
+
+        first_term = np.nansum(c[self.data[self.response].values > 0])
+        second_term = np.nansum(np.log(1 + np.exp(c)))
 
         return (first_term - second_term -
                 self.alpha * np.sum(a*a) - self.alpha * np.sum(b*b))
@@ -279,6 +341,7 @@ class LearnRaschModel:
         b_est = self.b_est
         mean_a = np.mean(a_est.values())
         mean_b = np.mean(b_est.values())
+
         for i in range(len(data)):
             if data.ix[i][user_id] in a_est:
                 a_temp = a_est[data.ix[i][user_id]]
@@ -304,27 +367,39 @@ class LearnRaschModel:
         return self.b_est.values()
 
     def _get_observed_indices(self, sum_user, sum_item):
+        """ Return a dataframe with columns index_user, index_item, and 'response'
+        """
 
         user_index_df = pd.DataFrame(sum_user.keys()).reset_index().\
                         rename(columns={'index': 'index_user', 0: 'val_user'})
         item_index_df = pd.DataFrame(sum_item.keys()).reset_index().\
                         rename(columns={'index': 'index_item', 0: 'val_item'})
 
-        return pd.merge(item_index_df, self.data[[self.user_id, self.item_id]],
+        return pd.merge(item_index_df,
+                        self.data[[self.user_id, self.item_id, self.response]],
                         left_on='val_item', right_on=self.item_id).\
                   merge(user_index_df, right_on='val_user',
                         left_on=self.user_id)[['index_user', 'index_item']]
 
-    def _get_item_user_sums(self):
+    def _get_item_user_sums(self, data):
 
-        sum_item = dict(self.data[[self.user_id, self.item_id, self.response]].
+        sum_item = dict(data[[self.user_id, self.item_id, self.response]].
                         groupby(self.item_id)[self.response].
                         sum())
-        sum_user = dict(self.data[[self.user_id, self.item_id, self.response]].
+        sum_user = dict(data[[self.user_id, self.item_id, self.response]].
                         groupby(self.user_id)[self.response].
                         sum())
 
         return sum_user, sum_item
+
+    def _update_item_user_sums(self, s):
+
+        tmp_data = self.data.copy()
+        tmp_data[self.response] = (tmp_data[self.response].values *
+                                   s[self.obser['index_item']].flatten())
+        sum_user, sum_item = self._get_item_user_sums(tmp_data)
+
+        return _fc(sum_user.values()), _fc(sum_item.values())
 
 
 def _c_tol(a, b):
@@ -334,6 +409,11 @@ def _c_tol(a, b):
 
 def _logit(a):
     return (1.0 / (1.0 + np.exp(-a)))
+
+
+def _fc(x):
+    """ force a column vector """
+    return np.expand_dims(x, 1)
 
 
 def _convert_to_dataframe(data):
