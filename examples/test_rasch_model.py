@@ -12,18 +12,21 @@ http://files.grouplens.org/datasets/movielens/ml-100k.zip
 thresh = 4
 
 # read training and testing data
-df_train = pd.read_table("data/ml-100K/u1.base", header=-1)
-df_test = pd.read_table("data/ml-100K/u1.test", header=-1)
+#df_train = pd.read_table("data/ml-100K/u1.base", header=-1)
+#df_test = pd.read_table("data/ml-100K/u1.test", header=-1)
 
 # binarize ratings for the example to work
-df_train[2] = (df_train[2] > thresh) * 1
-df_test[2] = (df_test[2] > thresh) * 1
+#df_train[2] = (df_train[2] > thresh) * 1
+#df_test[2] = (df_test[2] > thresh) * 1
+
+df_train = pd.read_csv("data/data/train.mtx", header = -1)
+df_test = pd.read_csv("data/data/test.mtx", header = -1)
 
 # initialize class for learning rasch model using default params
-lrm = LearnRaschModel(verbose=True, approx_grad=True, max_iter_inner=1, max_iter_outer=50, gamma = 10.0)
+lrm = LearnRaschModel(verbose=True, max_iter=20, gamma = 0.2, alpha=10.0, model='rasch')
 
 # fix model on training data
-lrm.fit(df_train, user_id=0, item_id=1, response=2, inplace=True)
+lrm.fit(df_train, user_id=0, item_id=1, response=2)
 
 print "Time taken: " + str(lrm.time_taken)
 
