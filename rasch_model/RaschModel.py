@@ -105,8 +105,8 @@ class LearnRaschModel:
         self.init = init
         self.model = model
 
-    def fit(self, data=None, user_id=0, item_id=1, response=2,
-            sum_user=None, sum_item=None):
+    def fit(self, data=None, user_id=0, item_id=1, response=2, 
+            wts=None):
         """ Fit the model Rasch model given data
 
         Parameters
@@ -118,6 +118,8 @@ class LearnRaschModel:
         user_id : if data is a DataFrame, then column name of user id
         item_id : if data is a DataFrame, then column name of item id
         response : if data is a DataFrame, then column with response
+        wts : column name of weights for each observations.
+                  only used when data is a DataFrame.
 
         Returns
         -------
@@ -126,18 +128,20 @@ class LearnRaschModel:
 
         time_begin = time.time()
 
-        # save dataframe
+        # save dataframe and if array convert to dataframe
         self.data = _convert_to_dataframe(data)
 
-        # compute sufficient statistics if not already available
-        if ((sum_user is None) and (sum_item is None)):
-            self.user_id = user_id
-            self.item_id = item_id
-            self.response = response
-            sum_user, sum_item = self._get_item_user_sums(self.data)
+        # save parameters
+        self.user_id = user_id
+        self.item_id = item_id
+        self.response = response
+        self.wts = wts
 
+        # get user and item sums (weighted, if weights are present)
+        sum_user, sum_item = self._get_user_item_sums(self.data, wts)
+
+        # save dimensions and other data
         self.N, self.Q = (len(sum_user), len(sum_item))
-
         self._save_params()
 
         # get user and item indices and store as
@@ -212,7 +216,7 @@ class LearnRaschModel:
 
             # need to update sum_user and sum_item for 2PL
             if self.model is '2PL':
-                sum_user, sum_item = self._update_item_user_sums(s_new)
+                sum_user, sum_item = self._update_user_item_sums(s_new)
 
             logL_new = self.likelihood(a_new, b_new, s_new)
             if (self.verbose):
@@ -284,6 +288,9 @@ class LearnRaschModel:
         else:
             s_temp = 1.0
 
+        if self.wts is not None:
+            s_temp = s_temp * self.data[self.wts]
+
         self.obser['val'] = _logit(a[self.obser[ind1]] +
                                    b[self.obser[ind2]]) * s_temp
 
@@ -293,11 +300,12 @@ class LearnRaschModel:
 
     def _compute_slope(self, s_est, a_est, b_est):
 	""" Compute the slope parameter per item
+        Only used when fitting 2PL models
         """
 
         def _slope_grad():
             """
-            \sum_{i} [y_{ij}(a_i+b_j) - logit(s_j(a_i+b_j)) * (a_i+b_j)]
+            \sum_{i} w_{ij}[y_{ij}(a_i+b_j) - logit(s_j(a_i+b_j)) * (a_i+b_j)]
             """
             sum_ab = (a_est[self.obser['index_user']] +
                       b_est[self.obser['index_item']])
@@ -315,21 +323,30 @@ class LearnRaschModel:
 
     def likelihood(self, a=None, b=None, s=None):
 
-        # \sum_{i,j} y_{i,j} s_j(a_i + b_j) - log(1 + exp(s_j(a_i + b_j)))
+        # \sum_{i,j} w_{ij}[y_{i,j} s_j(a_i + b_j) - log(1 + exp(s_j(a_i + b_j)))]
         if ((a is None) and (b is None) and (s is None)):
             a = np.array(self.a_est.values())
             b = np.array(self.b_est.values())
 
             if self.model is '2PL':
-                s = np.array(self.a_est.values())
+                s = np.array(self.s_est.values())
 
         c = a[self.obser['index_user']] + b[self.obser['index_item']]
 
         if (self.model is '2PL') and (s is not None):
             c = s[self.obser['index_item']] * c
 
-        first_term = np.nansum(c[self.data[self.response].values > 0])
-        second_term = np.nansum(np.log(1 + np.exp(c)))
+        pos = self.data[self.response].values > 0
+
+        # account for weights
+        w = 1.0
+        if self.wts is not None:
+            w = self.data[wts]
+            first_term = np.nansum(w[pos] * c[pos])
+        else:
+            first_term = np.nansum(c[pos])
+
+        second_term = np.nansum(w * np.log(1 + np.exp(c)))
 
         return (first_term - second_term -
                 self.alpha * np.sum(a*a) - self.alpha * np.sum(b*b))
@@ -381,23 +398,31 @@ class LearnRaschModel:
                   merge(user_index_df, right_on='val_user',
                         left_on=self.user_id)[['index_user', 'index_item']]
 
-    def _get_item_user_sums(self, data):
+    def _get_user_item_sums(self, data, wts):
+        """ return \sum_{i} w_{ij} y_{ij} and
+        \sum_{j} w_{ij} y_{ij}
+        """
 
-        sum_item = dict(data[[self.user_id, self.item_id, self.response]].
-                        groupby(self.item_id)[self.response].
+        obser = data[[self.user_id, self.item_id, self.response]]
+
+        # use weights if present --> weighted sum
+        if wts is not None:
+           obser = data[wts] * obser
+
+        sum_item = dict(obser.groupby(self.item_id)[self.response].
                         sum())
-        sum_user = dict(data[[self.user_id, self.item_id, self.response]].
-                        groupby(self.user_id)[self.response].
+        sum_user = dict(obser.groupby(self.user_id)[self.response].
                         sum())
 
         return sum_user, sum_item
 
-    def _update_item_user_sums(self, s):
+    def _update_user_item_sums(self, s):
+        """ update user and items sums.  only used when using 2PL """
 
         tmp_data = self.data.copy()
         tmp_data[self.response] = (tmp_data[self.response].values *
                                    s[self.obser['index_item']].flatten())
-        sum_user, sum_item = self._get_item_user_sums(tmp_data)
+        sum_user, sum_item = self._get_user_item_sums(tmp_data)
 
         return _fc(sum_user.values()), _fc(sum_item.values())
 
