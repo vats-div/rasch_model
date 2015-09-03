@@ -129,16 +129,10 @@ class LearnRaschModel:
         time_begin = time.time()
 
         # save dataframe and if array convert to dataframe
-        self.data = _convert_to_dataframe(data)
-
-        # save parameters
-        self.user_id = user_id
-        self.item_id = item_id
-        self.response = response
-        self.wts = wts
+        self._convert_to_dataframe(data, user_id, item_id, response, wts)
 
         # get user and item sums (weighted, if weights are present)
-        sum_user, sum_item = self._get_user_item_sums(self.data, wts)
+        sum_user, sum_item = self._get_user_item_sums()
 
         # save dimensions and other data
         self.N, self.Q = (len(sum_user), len(sum_item))
@@ -149,6 +143,7 @@ class LearnRaschModel:
         # self.obser has columns 'index_user' and 'index_item'
         self.obser = self._get_observed_indices(sum_user, sum_item)
 
+        # train model and return parameters
         a_est, b_est, s_est = self._learn_rasch(np.array(sum_user.values()),
                                                 np.array(sum_item.values()))
         time_end = time.time()
@@ -174,6 +169,8 @@ class LearnRaschModel:
             self.grad_slope = np.zeros((self.Q, 1))
 
     def recommend(self, user_key, k=5):
+        """ recommend 'k' items for a user
+        """
 
         # compute probability of each item
         tmp = dict(zip(self.b_est.keys(),
@@ -201,7 +198,7 @@ class LearnRaschModel:
             a_old = np.zeros((self.N, 1))
             b_old = np.zeros((self.Q, 1))
 
-        # initialize s_old to None
+        # initialize s_old if model is 2PL
         if self.model is '2PL':
             s_old = np.ones((self.Q, 1))
         else:
@@ -214,15 +211,19 @@ class LearnRaschModel:
             a_new, b_new, s_new = self._run_alt(sum_item, sum_user,
                                                 a_old, b_old, s_old)
 
-            # need to update sum_user and sum_item for 2PL
+            # update sum_user and sum_item for 2PL
             if self.model is '2PL':
                 sum_user, sum_item = self._update_user_item_sums(s_new)
 
             logL_new = self.likelihood(a_new, b_new, s_new)
+
             if (self.verbose):
                 print("Iteration: " + str(i) + ", logL: " + str(logL_new))
+
+            # if likelihood decreases, stop
             if ((logL_new - logL_old) < 0):
                 break
+
             b_old = b_new
             a_old = a_new
             s_old = s_new
@@ -289,11 +290,10 @@ class LearnRaschModel:
             s_temp = 1.0
 
         if self.wts is not None:
-            s_temp = s_temp * self.data[self.wts]
+            s_temp = s_temp * np.array(self.data[[self.wts]])
 
         self.obser['val'] = _logit(a[self.obser[ind1]] +
                                    b[self.obser[ind2]]) * s_temp
-
         tmp = self.obser.groupby(ind1)['val'].sum().values
 
         return (sum_y - _fc(tmp)) - self.alpha * 2 * a
@@ -340,8 +340,9 @@ class LearnRaschModel:
 
         # account for weights
         w = 1.0
+
         if self.wts is not None:
-            w = self.data[wts]
+            w = _fc(self.data[self.wts])
             first_term = np.nansum(w[pos] * c[pos])
         else:
             first_term = np.nansum(c[pos])
@@ -398,20 +399,26 @@ class LearnRaschModel:
                   merge(user_index_df, right_on='val_user',
                         left_on=self.user_id)[['index_user', 'index_item']]
 
-    def _get_user_item_sums(self, data, wts):
+    def _get_user_item_sums(self, new_data=None):
         """ return \sum_{i} w_{ij} y_{ij} and
         \sum_{j} w_{ij} y_{ij}
         """
 
-        obser = data[[self.user_id, self.item_id, self.response]]
+        if new_data is None:
+            new_data = self.data
+
+        obser = new_data[[self.user_id, self.item_id, self.response]]
 
         # use weights if present --> weighted sum
-        if wts is not None:
-           obser = data[wts] * obser
+        if self.wts is not None:
+           obser['mod_response'] = new_data[self.wts] * obser[self.response]
+           response = 'mod_response'
+        else:
+           response = self.response
 
-        sum_item = dict(obser.groupby(self.item_id)[self.response].
+        sum_item = dict(obser.groupby(self.item_id)[response].
                         sum())
-        sum_user = dict(obser.groupby(self.user_id)[self.response].
+        sum_user = dict(obser.groupby(self.user_id)[response].
                         sum())
 
         return sum_user, sum_item
@@ -426,6 +433,33 @@ class LearnRaschModel:
 
         return _fc(sum_user.values()), _fc(sum_item.values())
 
+    def _convert_to_dataframe(self, data, user_id, item_id, response, wts):
+        """ Convert np.array to data frame  and save parameters
+        """
+
+        if isinstance(data, np.ndarray):
+            u_ind, i_ind = np.meshgrid(range(data.shape[0]),
+                                       range(data.shape[1]))
+            u_ind = u_ind.flatten()
+            i_ind = i_ind.flatten()
+            df_new = pd.DataFrame()
+            df_new[0] = u_ind
+            df_new[1] = i_ind
+            df_new[2] = data[u_ind, i_ind]
+            user_id = 0
+            item_id = 1
+            response = 2
+            wts = None
+        else:
+            df_new = data
+
+        # save parameters
+        self.user_id = user_id
+        self.item_id = item_id
+        self.response = response
+        self.wts = wts
+        self.data = df_new
+
 
 def _c_tol(a, b):
     ind = (~np.isinf(a) & ~np.isinf(b))
@@ -439,24 +473,6 @@ def _logit(a):
 def _fc(x):
     """ force a column vector """
     return np.expand_dims(x, 1)
-
-
-def _convert_to_dataframe(data):
-    """ Convert np.array to data frame """
-
-    if isinstance(data, np.ndarray):
-        u_ind, i_ind = np.meshgrid(range(data.shape[0]),
-                                   range(data.shape[1]))
-        u_ind = u_ind.flatten()
-        i_ind = i_ind.flatten()
-        df_new = pd.DataFrame()
-        df_new[0] = u_ind
-        df_new[1] = i_ind
-        df_new[2] = data[u_ind, i_ind]
-    else:
-        df_new = data
-
-    return df_new
 
 
 def main(ns):
