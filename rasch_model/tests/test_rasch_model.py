@@ -1,8 +1,8 @@
 import sys
 sys.path.append('../rasch_model')
 
-from RaschModel import RaschModel
-from RaschModel import LearnRaschModel
+from rasch_model.RaschModel import RaschModel
+from rasch_model.RaschModel import LearnRaschModel
 
 from nose.tools import assert_equal
 from nose.tools import assert_true
