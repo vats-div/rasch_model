@@ -28,7 +28,7 @@ def test_learn_rasch_model():
     # Test Rasch Model Learning for a simple example
 
     a = [-0.5, 0.5]
-    b = np.random.randn(100, 1)
+    b = np.random.randn(500, 1)
     rm = RaschModel(a, b)
     Y = RaschModel(a, b).sample()
 

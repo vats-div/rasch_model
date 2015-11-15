@@ -105,7 +105,7 @@ class LearnRaschModel:
         self.init = init
         self.model = model
 
-    def fit(self, data=None, user_id=0, item_id=1, response=2, 
+    def fit(self, data=None, user_id=0, item_id=1, response=2,
             wts=None):
         """ Fit the model Rasch model given data
 
@@ -310,8 +310,8 @@ class LearnRaschModel:
             sum_ab = (a_est[self.obser['index_user']] +
                       b_est[self.obser['index_item']])
             sum_abs = s_est[self.obser['index_item']] * sum_ab
-            self.obser['val'] = _fc(self.data[self.response].values) *\
-                                sum_ab - _logit(sum_abs) * sum_ab
+            self.obser['val'] = (_fc(self.data[self.response].values) *
+                                 sum_ab - _logit(sum_abs) * sum_ab)
             tmp = self.obser.groupby('index_item')['val'].sum().values
             return _fc(tmp)
 
@@ -322,8 +322,10 @@ class LearnRaschModel:
                 1.0 * self.gamma * grad_temp / np.sqrt(self.grad_slope))
 
     def likelihood(self, a=None, b=None, s=None):
-
-        # \sum_{i,j} w_{ij}[y_{i,j} s_j(a_i + b_j) - log(1 + exp(s_j(a_i + b_j)))]
+        """
+        \sum_{i,j} [w_{ij}[y_{i,j} s_j(a_i + b_j)
+                    - log(1 + exp(s_j(a_i + b_j)))]
+        """
         if ((a is None) and (b is None) and (s is None)):
             a = np.array(self.a_est.values())
             b = np.array(self.b_est.values())
@@ -352,7 +354,10 @@ class LearnRaschModel:
         return (first_term - second_term -
                 self.alpha * np.sum(a*a) - self.alpha * np.sum(b*b))
 
-    def predict(self, data, user_id, item_id):
+    def predict(self, data, user_id, item_id, wts):
+        """
+
+        """
 
         pr = np.zeros((len(data), 1))
         a_est = self.a_est
@@ -388,15 +393,19 @@ class LearnRaschModel:
         """ Return a dataframe with columns index_user, index_item, and 'response'
         """
 
-        user_index_df = pd.DataFrame(sum_user.keys()).reset_index().\
-                        rename(columns={'index': 'index_user', 0: 'val_user'})
-        item_index_df = pd.DataFrame(sum_item.keys()).reset_index().\
-                        rename(columns={'index': 'index_item', 0: 'val_item'})
+        user_index_df = pd.DataFrame(sum_user.keys())\
+                          .reset_index()\
+                          .rename(columns={'index': 'index_user',
+                                           0: 'val_user'})
+        item_index_df = pd.DataFrame(sum_item.keys())\
+                          .reset_index()\
+                          .rename(columns={'index': 'index_item',
+                                           0: 'val_item'})
 
         return pd.merge(item_index_df,
                         self.data[[self.user_id, self.item_id, self.response]],
-                        left_on='val_item', right_on=self.item_id).\
-                  merge(user_index_df, right_on='val_user',
+                        left_on='val_item', right_on=self.item_id)\
+                 .merge(user_index_df, right_on='val_user',
                         left_on=self.user_id)[['index_user', 'index_item']]
 
     def _get_user_item_sums(self, new_data=None):
@@ -411,10 +420,10 @@ class LearnRaschModel:
 
         # use weights if present --> weighted sum
         if self.wts is not None:
-           obser['mod_response'] = new_data[self.wts] * obser[self.response]
-           response = 'mod_response'
+            obser['mod_response'] = new_data[self.wts] * obser[self.response]
+            response = 'mod_response'
         else:
-           response = self.response
+            response = self.response
 
         sum_item = dict(obser.groupby(self.item_id)[response].
                         sum())
