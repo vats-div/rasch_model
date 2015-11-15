@@ -354,9 +354,20 @@ class LearnRaschModel:
         return (first_term - second_term -
                 self.alpha * np.sum(a*a) - self.alpha * np.sum(b*b))
 
-    def predict(self, data, user_id, item_id, wts):
+    def predict(self, data, user_id, item_id):
         """
+        Predict the probability for each (user_id, item_id) pair
+        Assumes the Rasch model (does not work for 2PL model)
+        TODO: Function can be made faster using joins etc
 
+        Inputs
+        ------
+          data: input dataframe
+          user_id: name or id of the user_id column
+          item_id: name or id of the item_id column
+        Returns
+        -------
+        numpy array of probability values for each row of data
         """
 
         pr = np.zeros((len(data), 1))
