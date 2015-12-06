@@ -204,9 +204,6 @@ class LearnRaschModel:
         else:
             s_old = None
 
-        # don't really need s_old since s is initialized to all ones
-        logL_old = self.likelihood(a_old, b_old)
-
         for i in range(self.max_iter):
             a_new, b_new, s_new = self._run_alt(sum_item, sum_user,
                                                 a_old, b_old, s_old)
@@ -215,19 +212,12 @@ class LearnRaschModel:
             if self.model is '2PL':
                 sum_user, sum_item = self._update_user_item_sums(s_new)
 
-            logL_new = self.likelihood(a_new, b_new, s_new)
-
             if (self.verbose):
-                print("Iteration: " + str(i) + ", logL: " + str(logL_new))
-
-            # if likelihood decreases, stop
-            if ((logL_new - logL_old) < 0):
-                break
+                print("Iteration: " + str(i))
 
             b_old = b_new
             a_old = a_new
             s_old = s_new
-            logL_old = logL_new
 
         # save total number of iterations
         self.num_iter = i
@@ -321,6 +311,7 @@ class LearnRaschModel:
         return (s_est +
                 1.0 * self.gamma * grad_temp / np.sqrt(self.grad_slope))
 
+
     def likelihood(self, a=None, b=None, s=None):
         """
         \sum_{i,j} [w_{ij}[y_{i,j} s_j(a_i + b_j)
@@ -376,19 +367,14 @@ class LearnRaschModel:
         mean_a = np.mean(a_est.values())
         mean_b = np.mean(b_est.values())
 
-        for i in range(len(data)):
-            if data.ix[i][user_id] in a_est:
-                a_temp = a_est[data.ix[i][user_id]]
-            else:
-                a_temp = mean_a
-            if data.ix[i][item_id] in b_est:
-                b_temp = b_est[data.ix[i][item_id]]
-            else:
-                b_temp = mean_b
+        data = data.merge(pd.DataFrame(a_est.items(), columns=['user_id', 'a_est']),
+                          how='left', on='user_id').fillna(mean_a)
+        data = data.merge(pd.DataFrame(b_est.items(), columns=['item_id', 'b_est']),
+                          how='left', on='item_id').fillna(mean_b)
+        data['pr'] = _logit(data['a_est'] + data['b_est'])
 
-            pr[i] = _logit(a_temp + b_temp)
+        return _fc(np.array(data['pr']))
 
-        return pr
 
     def get_user(self):
         """ Return user level parameters
@@ -516,7 +502,7 @@ def main(ns):
     pr = lrm.predict(test_data, user_id=ns.user_id, item_id=ns.item_id)
     print roc_auc_score(test_data[ns.response], pr)
 
-    test_data["irt.urlbuy"] = pr
+    test_data["predict"] = pr
     print "Saving CSV file to " + ns.output
     test_data.to_csv(ns.output, index=False)
 
